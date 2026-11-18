@@ -22,6 +22,10 @@ class Suggestion:
     suggested: str
     reason: str
     confidence: float | None = None
+    # 默认是修改已有文本框；
+    # - "add_textbox" 表示在对应 slide 新增一个文本框
+    # - "delete_textbox" 表示删除一个已有文本框
+    action: str = "edit"
 
 
 class SuggestionProvider(Protocol):
@@ -112,6 +116,7 @@ class DeepSeekSuggestionProvider:
     def generate(
         self, instruction: str, objects: List[Dict[str, Any]]
     ) -> List[Suggestion]:
+        print(f"[DEEPSEEK] called objects={len(objects)} instruction_len={len(instruction or '')}")
         # 为了降低 prompt 长度，只把必要字段发给 LLM
         minimal_objects = [
             {
@@ -123,19 +128,36 @@ class DeepSeekSuggestionProvider:
         ]
 
         system_prompt = (
-            "你是一个 PPT 文本编辑助手。"
-            "根据用户的自然语言指令，对给定的文本对象生成修改建议。"
-            "严格按下面的 JSON 数组格式返回，不要输出多余内容：\n"
+            "你是一个专门帮用户修改 PPT 文本内容的编辑助手。\n"
+            "用户会给你一条自然语言指令（例如：更新年份、改措辞、更简洁、统一语气等），"
+            "以及每个文本框的原始内容（仅包含 slide_index / shape_id / text）。\n\n"
+            "你的目标：\n"
+            "1. 在**尽量保留原意**的前提下，根据指令给出更好的文本版本，可以包含：\n"
+            "   - 年份或数字的更新（例如 2024 → 2026）\n"
+            "   - 语气和措辞的优化（更正式、更清晰、更有说服力等）\n"
+            "   - 要点合并或精简，使要点更简洁、有结构（但不要随意丢失关键信息）\n"
+            "2. 可以在某些页面上**新增一个文本框**，例如添加总结性一句话或新的要点，但请保持数量克制。\n"
+            "3. 可以根据指令**删除某个文本框**（例如“删掉这一页右下角的免责声明”）。\n"
+            "4. 每条建议只针对一个文本框（shape_id），不要跨文本框合并；新增文本框时只绑定 slide_index。\n"
+            "5. 如果某个文本不需要修改，可以不返回该条。\n\n"
+            "输出要求（非常重要）：\n"
+            "- **只输出 JSON 数组本身**，不要任何解释性文字，不要 Markdown。\n"
+            "- 数组中的每个元素必须严格符合下面的结构：\n"
             "[\n"
-            '  {\n'
+            "  {\n"
             '    "slide_index": <int>,\n'
             '    "shape_id": "<string>",\n'
-            '    "original": "<原始文本>",\n'
-            '    "suggested": "<建议后的文本>",\n'
-            '    "reason": "<简短原因>",\n'
-            '    "confidence": <0-1 之间的小数，可选>\n'
+            '    "original": "<原始文本，如果是新增文本框则可以是空字符串>",\n'
+            '    "suggested": "<根据指令优化后的文本 或 新增文本框的内容>",\n'
+            '    "reason": "<1~2 句中文，总结你对这段文本做了什么修改>",\n'
+            '    "confidence": <0-1 之间的小数，可选>,\n'
+            '    "action": "<可选，\"edit\"、\"add_textbox\" 或 \"delete_textbox\">"\n'
             "  }, ...\n"
-            "]"
+            "]\n"
+            "请务必保证：\n"
+            "- 所有 slide_index / shape_id 都来自输入 objects，不要编造新的。\n"
+            "- 当 action 缺省或为 \"edit\" / \"delete_textbox\" 时：original 字段必须与对应对象的 text 高度一致（包括主要内容）。\n"
+            "- 当 action 为 \"add_textbox\" 时：shape_id 可以写任意占位字符串，original 可以留空，suggested 为新增文本框内容。\n"
         )
 
         user_prompt = {
@@ -176,11 +198,13 @@ class DeepSeekSuggestionProvider:
             .get("content", "")
             .strip()
         )
+        print(f"[DEEPSEEK] response_content_len={len(content)}")
 
         try:
             parsed = json.loads(content)
         except json.JSONDecodeError:
             # 如果 LLM 返回的不是纯 JSON，则回退为空列表，交给上层用 Mock 或报错
+            print("[DEEPSEEK] json_parse_failed -> []")
             return []
 
         suggestions: List[Suggestion] = []
@@ -196,11 +220,13 @@ class DeepSeekSuggestionProvider:
                     confidence=float(item.get("confidence"))
                     if item.get("confidence") is not None
                     else None,
+                    action=str(item.get("action", "edit")),
                 )
             except Exception:
                 continue
             suggestions.append(sug)
 
+        print(f"[DEEPSEEK] parsed_suggestions={len(suggestions)}")
         return suggestions
 
 
@@ -209,32 +235,71 @@ def validate_suggestions(
 ) -> List[Suggestion]:
     """
     - shape_id 必须存在
-    - original 必须与对象 text 有匹配（包含或高相似度，这里用包含/相等简化）
-    - suggested 长度限制 <= 1.3 * original
+    - original 必须与对象 text 高度一致（这里要求相等或差异很小）
+    - suggested 长度限制适度放宽：允许在 [0.3, 2.0] 倍 original 之间
     """
     objects_by_key: Dict[tuple[int, str], Dict[str, Any]] = {
         (o["slide_index"], o["shape_id"]): o for o in objects
     }
+    slide_indices = {o["slide_index"] for o in objects}
 
     valid: List[Suggestion] = []
     for s in suggestions:
+        action = (s.action or "edit").lower()
+
+        # 新增文本框：只校验 slide_index 合理 + 文本非空
+        if action == "add_textbox":
+            suggested = (s.suggested or "").strip()
+            if not suggested:
+                continue
+            if s.slide_index not in slide_indices:
+                continue
+            valid.append(s)
+            continue
+
+        # 其余（edit / delete_textbox）都需要匹配已有对象
         key = (s.slide_index, s.shape_id)
         obj = objects_by_key.get(key)
         if not obj:
             continue
 
-        text = obj.get("text", "") or ""
-        original = s.original or ""
-        suggested = s.suggested or ""
+        text = (obj.get("text", "") or "").strip()
+        original = (s.original or "").strip()
+        suggested = (s.suggested or "").strip()
 
-        if not original.strip():
-            continue
-        if original not in text and text not in original:
+        # original 必须非空
+        if not original:
             continue
 
-        max_len = int(len(original) * 1.3) if original else 0
-        if max_len and len(suggested) > max_len:
+        # 要求 original 与对象文本高度一致：
+        # - 允许首尾空白差异
+        # - 为了兼容少量标点差异，放宽为“长度相近且有较大部分相同”
+        if original != text:
+            # 长度差距过大直接丢弃
+            if not text or abs(len(original) - len(text)) > max(len(text), len(original)) * 0.2:
+                continue
+            # 简单 token 交集检查
+            orig_tokens = set(original.replace("\n", " ").split())
+            text_tokens = set(text.replace("\n", " ").split())
+            if not orig_tokens or not text_tokens:
+                continue
+            overlap = len(orig_tokens & text_tokens) / max(len(orig_tokens), 1)
+            if overlap < 0.5:
+                continue
+
+        # delete_textbox：允许 suggested 为空（会被当作“清空文本框”处理）
+        if action == "delete_textbox":
+            valid.append(s)
             continue
+
+        # edit：suggested 必须存在且长度在 0.3x ~ 2.0x 之间
+        if not suggested:
+            continue
+        min_len = int(len(original) * 0.3)
+        max_len = int(len(original) * 2.0)
+        if len(original) > 0:
+            if len(suggested) < max(min_len, 1) or len(suggested) > max_len:
+                continue
 
         valid.append(s)
 
@@ -255,8 +320,18 @@ def get_suggestion_provider() -> SuggestionProvider:
     注意：如果 USE_DEEPSEEK=true 但 DeepSeek 初始化失败，会直接抛出异常，
     这样你能在日志中清楚看到是 DeepSeek 配置问题，而不是静默退回 Mock。
     """
+    # 强制模式：确保每次都走 DeepSeek（不允许静默回退）
+    force_deepseek = os.getenv("FORCE_DEEPSEEK", "false").lower() == "true"
     use_deepseek = os.getenv("USE_DEEPSEEK", "false").lower() == "true"
-    if use_deepseek:
-        return DeepSeekSuggestionProvider()
+
+    if force_deepseek or use_deepseek:
+        provider = DeepSeekSuggestionProvider()
+        print(
+            "[SUGGEST] provider=deepseek "
+            f"model={getattr(provider, 'model', '')} base={getattr(provider, 'api_base', '')}"
+        )
+        return provider
+
+    print("[SUGGEST] provider=mock")
     return MockSuggestionProvider()
 
