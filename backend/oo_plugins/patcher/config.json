@@ -1,0 +1,15 @@
+{
+  "baseUrl": "",
+  "guid": "asc.{D4A5F5D5-0A9E-4B7D-A3F2-8C0E0B5C9B51}",
+  "name": "AI Patch Bridge",
+  "version": "1.0.0",
+  "variations": [
+    {
+      "description": "Receive patch commands from host app and apply to current presentation session.",
+      "EditorsSupport": ["slide"],
+      "type": "system",
+      "url": "index.html"
+    }
+  ]
+}
+
