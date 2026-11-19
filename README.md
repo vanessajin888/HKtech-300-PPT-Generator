@@ -12,7 +12,7 @@ PPT Cursor began with a friend's frustration: hours spent manually updating Powe
 
 ## 新旧版本 / Versions
 
-- **原始上传版本 / Original upload**：[浏览原始源码](https://github.com/vanessajin888/HKtech-300-PPT-Generator/tree/823e1a99c774b19057d038da40377f209ee7de1e)。原提交及上传记录完整保留。
+- **原始上传版本 / Original upload**：[浏览原始源码](https://github.com/vanessajin888/HKtech-300-PPT-Generator/tree/55c57b1a63462d68d3373da004b48d3e30c04b3c)。原提交及上传记录完整保留。
 - **整理后的版本 / Current edition**：当前 `main` 分支，包含 ONLYOFFICE 集成、精简源码、配置模板及回归测试。
 - **[完整提交历史 / Full history](https://github.com/vanessajin888/HKtech-300-PPT-Generator/commits/main/)**：可以查看新旧版本之间的变化。
 
