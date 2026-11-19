@@ -4,8 +4,8 @@
 
 原始上传版本及其安装说明保留在 Git 历史中：
 
-- [原始源码](https://github.com/vanessajin888/HKtech-300-PPT-Generator/tree/823e1a99c774b19057d038da40377f209ee7de1e)
-- [原始安装说明](https://github.com/vanessajin888/HKtech-300-PPT-Generator/blob/823e1a99c774b19057d038da40377f209ee7de1e/SETUP_ON_NEW_PC.md)
+- [原始源码](https://github.com/vanessajin888/HKtech-300-PPT-Generator/tree/55c57b1a63462d68d3373da004b48d3e30c04b3c)
+- [原始安装说明](https://github.com/vanessajin888/HKtech-300-PPT-Generator/blob/55c57b1a63462d68d3373da004b48d3e30c04b3c/SETUP_ON_NEW_PC.md)
 - [项目起源与署名](OUR_STORY.md)
 
 历史版本用于追溯。当前版本使用 ONLYOFFICE，安装方式与原始 LibreOffice 版本不同。
